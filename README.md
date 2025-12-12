@@ -7,7 +7,7 @@
 #### [Zhiyuan Li<sup>1,2,3</sup>](https://huai-chang.github.io/) · [Chi-Man Pun<sup>1</sup>](https://cmpun.github.io/) 📪 · [Chen Fang<sup>2</sup>](http://fangchen.org/) · [Jue Wang<sup>2</sup>](https://scholar.google.com/citations?user=Bt4uDWMAAAAJ&hl=en) · [Xiaodong Cun<sup>3</sup>](https://vinthony.github.io/academic/) 📪
 <sup>1</sup> University of Macau  &nbsp;&nbsp; <sup>2</sup> [Dzine.ai](https://www.dzine.ai/)  &nbsp;&nbsp; <sup>3</sup> [GVC Lab, Great Bay University](https://gvclab.github.io/)
 
-<img src="assets/highlight.svg" alt="highlight" width="100%">
+<img src="assets/highlight.svg" alt="highlight" width="95%">
 
 <img src="assets/demo_1.gif" width="40%"> &nbsp;&nbsp; <img src="assets/demo_2.gif" width="40%">
 </div>

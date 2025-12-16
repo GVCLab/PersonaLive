@@ -11,7 +11,7 @@ def prepare_base_model():
                      "unet/diffusion_pytorch_model.bin", 
                      "image_encoder/config.json",
                      "image_encoder/pytorch_model.bin",
-                     "model_index.josn"]:
+                     "model_index.json"]:
         path = Path(hub_file)
         saved_path = local_dir / path
         if os.path.exists(saved_path):

@@ -17,7 +17,7 @@
 ## 📋 TODO
 - [ ] Fix bugs (If you encounter any issues, please feel free to open an issue or contact me! 🙏)
 - [ ] Enhance WebUI (Support reference image replacement).
-- [x] **[2025.12.17]** 🔥 [ComfyUI](https://github.com/okdalto/ComfyUI-PersonaLive) is now supported! (Thanks to [@okdalto](https://github.com/okdalto))
+- [x] **[2025.12.17]** 🔥 [ComfyUI-PersonaLive](https://github.com/okdalto/ComfyUI-PersonaLive) is now supported! (Thanks to [@okdalto](https://github.com/okdalto))
 - [x] **[2025.12.15]** 🔥 Release `paper`!
 - [x] **[2025.12.12]** 🔥 Release `inference code`, `config` and `pretrained weights`!
 
@@ -44,16 +44,16 @@ pip install -r requirements_base.txt
 ```
 
 ### ⏬ Download weights
-1. Download pre-trained weight of based models and other components ([sd-image-variations-diffusers](https://huggingface.co/lambdalabs/sd-image-variations-diffusers) and [sd-vae-ft-mse](https://huggingface.co/stabilityai/sd-vae-ft-mse)), you can run the following command to download weights automatically:
+Option 1: Download pre-trained weights of base models and other components ([sd-image-variations-diffusers](https://huggingface.co/lambdalabs/sd-image-variations-diffusers) and [sd-vae-ft-mse](https://huggingface.co/stabilityai/sd-vae-ft-mse)). You can run the following command to download weights automatically:
     ```
     python tools/download_weights.py
     ```
 
-2. Download pre-trained weights into the `./pretrained_weights` folder.
+Option 2: Download pre-trained weights into the `./pretrained_weights` folder from one of the below URLs:
     
-    <a href='https://drive.google.com/drive/folders/1GOhDBKIeowkMpBnKhGB8jgEhJt_--vbT?usp=drive_link'><img src='https://img.shields.io/badge/Google%20Drive-5B8DEF?style=for-the-badge&logo=googledrive&logoColor=white'></a> <a href='https://pan.baidu.com/s/1DCv4NvUy_z7Gj2xCGqRMkQ?pwd=gj64'><img src='https://img.shields.io/badge/Baidu%20Netdisk-3E4A89?style=for-the-badge&logo=baidu&logoColor=white'></a> <a href='https://www.alipan.com/s/jyJ9JBqS6Ty'><img src='https://img.shields.io/badge/Aliyun%20Drive-E67E22?style=for-the-badge&logo=alibabacloud&logoColor=white'></a> <a href='https://huggingface.co/huaichang/PersonaLive'><img src='https://img.shields.io/badge/HuggingFace-C8AC50?style=for-the-badge&logo=huggingface&logoColor=white'></a>
+<a href='https://drive.google.com/drive/folders/1GOhDBKIeowkMpBnKhGB8jgEhJt_--vbT?usp=drive_link'><img src='https://img.shields.io/badge/Google%20Drive-5B8DEF?style=for-the-badge&logo=googledrive&logoColor=white'></a> <a href='https://pan.baidu.com/s/1DCv4NvUy_z7Gj2xCGqRMkQ?pwd=gj64'><img src='https://img.shields.io/badge/Baidu%20Netdisk-3E4A89?style=for-the-badge&logo=baidu&logoColor=white'></a> <a href='https://www.alipan.com/s/jyJ9JBqS6Ty'><img src='https://img.shields.io/badge/Aliyun%20Drive-E67E22?style=for-the-badge&logo=alibabacloud&logoColor=white'></a> <a href='https://huggingface.co/huaichang/PersonaLive'><img src='https://img.shields.io/badge/HuggingFace-C8AC50?style=for-the-badge&logo=huggingface&logoColor=white'></a>
 
-Finally, these weights should be orgnized as follows:
+Finally, these weights should be organized as follows:
 ```
 pretrained_weights
 ├── onnx
@@ -116,7 +116,7 @@ python torch2trt.py
 ```
 python inference_online.py --acceleration none (for RTX 50-Series) or xformers or tensorrt
 ```
-then open `http://0.0.0.0:7860` in your browser. (*If `http://0.0.0.0:7860` does not work well, try `http://localhost:7860`)
+Then open `http://0.0.0.0:7860` in your browser. (*If `http://0.0.0.0:7860` does not work well, try `http://localhost:7860`)
 
 **How to use**: Upload Image ➡️ Fuse Reference ➡️ Start Animation ➡️ Enjoy! 🎉
 <div align="center">
@@ -136,7 +136,7 @@ Special thanks to the community for providing helpful setups! 🥂
 
 * **TensorRT on Windows**: If you are trying to convert TensorRT models on Windows, [this discussion](https://github.com/GVCLab/PersonaLive/issues/8) might be helpful. Special thanks to [@MaraScott](https://github.com/MaraScott) and [@Jeremy8776](https://github.com/Jeremy8776) for their insights.
   
-* **ComfyUI**: Thanks to [@okdalto](https://github.com/okdalto) for helping implement the ComfyUI support.
+* **ComfyUI**: Thanks to [@okdalto](https://github.com/okdalto) for helping implement the [ComfyUI-PersonaLive](https://github.com/okdalto/ComfyUI-PersonaLive) support.
 
 
 ## ⭐ Citation

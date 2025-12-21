@@ -94,6 +94,15 @@ python inference_offline.py
 python inference_offline.py --use_xformers False
 ```
 
+To reduce video memory usage, use the `--batch_size` parameter:
+```
+python inference_offline.py --batch_size=16
+```
+**Recommended values:**  
+`--batch_size=16` for GPUs with **8-12 GB** of VRAM  
+`--batch_size=32` for GPUs with **12-16 GB** of VRAM  
+The value must be a multiple of 4 (temporal_window_size)  
+
 ### 📸 Online Inference
 #### 📦 Setup Web UI
 ```

@@ -331,8 +331,7 @@ def main(args):
                 video,
                 save_vid_path,
                 n_rows=4,
-                fps=25,
-                audio_source=pose_video_path,
+                fps=25
             )
 
             if True:

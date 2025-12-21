@@ -249,6 +249,10 @@ def main(args):
                 if batch_size < temporal_window_size:
                     batch_size = temporal_window_size
 
+            print("-----------")
+            print(f"Batch size: {batch_size}")
+            print("-----------")
+
             # Process in batches if needed
             if batch_size < total_frames:
                 print(f"Processing {total_frames} frames in batches of {batch_size} to reduce VRAM usage...")

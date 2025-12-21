@@ -48,6 +48,10 @@ def parse_args():
                         help="Number of frames to process per batch. Set to 0 to process all frames at once (default). "
                              "Use smaller values (e.g., 16, 32) to reduce VRAM usage on GPUs with limited memory. "
                              "Must be divisible by 4 (temporal_window_size).")
+    parser.add_argument("--reference_image", type=str, default='',
+                        help="Path to reference image. If provided, overrides test_cases from config file.")
+    parser.add_argument("--driving_video", type=str, default='',
+                        help="Path to driving video. If provided, overrides test_cases from config file.")
     args = parser.parse_args()
 
     return args
@@ -175,7 +179,11 @@ def main(args):
         [transforms.Resize((height, width)), transforms.ToTensor()]
     )
 
-    args.test_cases = OmegaConf.load(args.config)["test_cases"]
+    # Override test_cases from config if CLI arguments are provided
+    if args.reference_image and args.driving_video:
+        args.test_cases = {args.reference_image: [args.driving_video]}
+    else:
+        args.test_cases = OmegaConf.load(args.config)["test_cases"]
 
     for ref_image_path in list(args.test_cases.keys()):
         for pose_video_path in args.test_cases[ref_image_path]:

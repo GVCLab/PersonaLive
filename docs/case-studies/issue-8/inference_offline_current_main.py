@@ -39,23 +39,6 @@ def clear_gpu_memory():
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
 
-
-def interpolate_tensors(a, b, num, device=None, dtype=None):
-    """
-    Linear interpolation between tensors a and b.
-    input shape: (B, 1, D1, D2, ...)
-    output shape: (B, num, D1, D2, ...)
-    """
-    if device is None:
-        device = a.device
-    if dtype is None:
-        dtype = a.dtype
-    alphas = torch.linspace(0, 1, num, device=device, dtype=dtype)
-    view_shape = (1, num) + (1,) * (len(a.shape) - 2)
-    alphas = alphas.view(view_shape)
-    return (1 - alphas) * a + alphas * b
-
-
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, default='configs/prompts/personalive_offline.yaml')
@@ -67,10 +50,10 @@ def parse_args():
     parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--use_xformers", type=bool, default=True)
     parser.add_argument("--batch_size", type=int, default=0,
-                        help="Number of frames per sliding window iteration. Set to 0 to process all frames at once (default). "
-                             "Use smaller values (e.g., 4, 8, 16) for GPUs with limited VRAM (12-16GB). "
-                             "Uses on-the-fly sliding window generation for smooth video without jerky transitions. "
-                             "Must be divisible by 4 (temporal_window_size). Recommended: 4 for minimal VRAM.")
+                        help="Number of frames to process per sliding window iteration. Set to 0 to process all frames at once (default). "
+                             "Use smaller values (e.g., 4, 8, 16) to reduce VRAM usage on GPUs with limited memory. "
+                             "Uses sliding window generation for smooth video without jerky transitions. "
+                             "Must be divisible by 4 (temporal_window_size). Recommended: 4 for minimal VRAM, 8-16 for balance.")
     parser.add_argument("--reference_image", type=str, default='',
                         help="Path to reference image. If provided, overrides test_cases from config file.")
     parser.add_argument("--driving_video", type=str, default='',
@@ -78,28 +61,6 @@ def parse_args():
     args = parser.parse_args()
 
     return args
-
-
-def crop_face_tensor(image_tensor, boxes, target_size=(224, 224)):
-    """Crop face from tensor and resize to target size."""
-    left, top, right, bot = boxes
-    left, top, right, bottom = map(int, (left, top, right, bot))
-
-    face_patch = image_tensor[:, top:bottom, left:right]
-    face_patch = F.interpolate(
-        face_patch.unsqueeze(0),
-        size=target_size,
-        mode="bilinear",
-        align_corners=False,
-    )
-    return face_patch
-
-
-def get_boxes_from_kps(kps):
-    """Get bounding boxes from keypoints."""
-    from src.utils.util import get_boxes
-    return get_boxes(kps)
-
 
 def main(args):
     device = args.device
@@ -130,7 +91,7 @@ def main(args):
     motion_encoder = MotEncoder().to(dtype=weight_dtype, device=device).eval()
     pose_guider = PoseGuider().to(device=device, dtype=weight_dtype)
     pose_encoder = MotionExtractor(num_kp=21).to(device=device, dtype=weight_dtype).eval()
-
+    
     image_enc = CLIPVisionModelWithProjection.from_pretrained(
         config.image_encoder_path
     ).to(dtype=weight_dtype, device=device)
@@ -182,9 +143,9 @@ def main(args):
         ),
         strict=False,
     )
-
+    
     if args.use_xformers:
-        if is_xformers_available():
+        if is_xformers_available(): 
             try:
                 reference_unet.enable_xformers_memory_efficient_attention()
                 denoising_unet.enable_xformers_memory_efficient_attention()
@@ -316,9 +277,8 @@ def main(args):
                     temporal_adaptive_step=temporal_adaptive_step,
                 ).videos
             else:
-                # Streaming sliding window generation for reduced VRAM usage
-                # This approach processes frames on-the-fly, computing features just-in-time
-                # instead of precomputing everything upfront (which causes OOM)
+                # Sliding window generation for reduced VRAM usage
+                # This approach maintains continuous latent state across windows for smooth video
 
                 # Ensure batch_size is divisible by temporal_window_size
                 frames_per_window = (args.batch_size // temporal_window_size) * temporal_window_size
@@ -326,11 +286,11 @@ def main(args):
                     frames_per_window = temporal_window_size
 
                 padding_num = (temporal_adaptive_step - 1) * temporal_window_size  # 12 frames
-                num_windows = total_frames // temporal_window_size
+                windows_per_iteration = frames_per_window // temporal_window_size
 
                 print("-----------")
-                print(f"Streaming sliding window mode: {frames_per_window} frames per iteration")
-                print(f"Total frames: {total_frames}, Windows: {num_windows}, Padding: {padding_num}")
+                print(f"Sliding window mode: {frames_per_window} frames per iteration ({windows_per_iteration} windows)")
+                print(f"Total frames: {total_frames}, Padding: {padding_num}")
                 print("-----------")
 
                 # Initialize image processors
@@ -339,7 +299,7 @@ def main(args):
                 cond_image_processor = VaeImageProcessor(vae_scale_factor=vae_scale_factor, do_convert_rgb=True, do_normalize=True)
                 clip_image_processor = CLIPImageProcessor()
 
-                # Prepare reference image embeddings (done once)
+                # Prepare reference image embeddings
                 clip_image = clip_image_processor.preprocess(
                     ref_image_pil.resize((224, 224)), return_tensors="pt"
                 ).pixel_values
@@ -348,14 +308,14 @@ def main(args):
                 ).image_embeds
                 encoder_hidden_states = clip_image_embeds.unsqueeze(1)
 
-                # Prepare reference image latents (done once)
+                # Prepare reference image latents
                 ref_image_tensor = ref_image_processor.preprocess(
                     ref_image_pil, height=height, width=width
                 ).to(dtype=weight_dtype, device=device)
                 ref_image_latents = vae.encode(ref_image_tensor).latent_dist.mean
                 ref_image_latents = ref_image_latents * 0.18215
 
-                # Setup reference attention control (done once)
+                # Setup reference attention control
                 reference_control_writer = ReferenceAttentionControl(
                     reference_unet,
                     do_classifier_free_guidance=False,
@@ -372,7 +332,7 @@ def main(args):
                     cache_kv=True,
                 )
 
-                # Initialize reference unet (done once)
+                # Initialize reference unet
                 reference_unet(
                     ref_image_latents,
                     torch.zeros((1,), dtype=weight_dtype, device=device),
@@ -386,7 +346,18 @@ def main(args):
                 scheduler.set_step_length(333)
                 jump = num_inference_steps // temporal_adaptive_step
 
-                # Prepare reference conditioning tensors (done once)
+                # Initialize latents pile with padding
+                latents_pile = deque([])
+                init_latents = ref_image_latents.unsqueeze(2).repeat(1, 1, padding_num, 1, 1)
+                noise = torch.randn_like(init_latents)
+                init_timesteps = reversed(timesteps).repeat_interleave(temporal_window_size, dim=0)
+                noisy_latents_first = scheduler.add_noise(init_latents, noise, init_timesteps[:padding_num])
+                for i in range(temporal_adaptive_step - 1):
+                    l = i * temporal_window_size
+                    r = (i + 1) * temporal_window_size
+                    latents_pile.append(noisy_latents_first[:, :, l:r])
+
+                # Prepare reference face for motion encoding
                 ref_cond_tensor = cond_image_processor.preprocess(
                     ref_image_pil, height=256, width=256
                 ).to(device=device, dtype=weight_dtype)
@@ -397,139 +368,178 @@ def main(args):
                 ).to(device=device, dtype=weight_dtype)
                 ref_motion = motion_encoder(ref_face_cond_tensor.unsqueeze(2))
 
-                # Process first frame to get cached keypoints (like wrapper.py)
+                # Precompute all driving face motion embeddings and keypoints
+                # Use memory-efficient approach: process in batches and use get_kps after first frame
+                print("Precomputing motion embeddings and keypoints...")
+
+                # First, preprocess the first frame to get reference keypoints (like wrapper.py)
                 first_pose_img = ori_pose_images[0]
                 first_tgt_cond = cond_image_processor.preprocess(
                     first_pose_img, height=256, width=256
                 ).to(device=device, dtype=weight_dtype)
                 first_tgt_cond = first_tgt_cond / 2 + 0.5
 
-                # Get interpolated keypoints for padding + cached refs
+                # Get interpolated keypoints for padding (from reference to first frame)
+                # This also gives us the cached kps_ref and kps_frame1 for efficient subsequent processing
                 mot_bbox_param_interp, kps_ref, kps_frame1, _ = pose_encoder.interpolate_kps_online(
                     ref_cond_tensor, first_tgt_cond, num_interp=padding_num + 1
                 )
 
-                # Initialize latents pile with padding (12 frames)
-                latents_pile = deque(maxlen=temporal_adaptive_step)
-                init_latents = ref_image_latents.unsqueeze(2).repeat(1, 1, padding_num, 1, 1)
-                noise = torch.randn_like(init_latents)
-                init_timesteps = reversed(timesteps).repeat_interleave(temporal_window_size, dim=0)
-                noisy_latents_first = scheduler.add_noise(init_latents, noise, init_timesteps[:padding_num])
-                for i in range(temporal_adaptive_step - 1):
-                    l = i * temporal_window_size
-                    r = (i + 1) * temporal_window_size
-                    latents_pile.append(noisy_latents_first[:, :, l:r])
-                del init_latents, noise, noisy_latents_first
-                clear_gpu_memory()
+                # Process all frame keypoints in batches using the efficient get_kps method
+                # This avoids calling interpolate_kps for each frame which is memory-intensive
+                all_mot_bbox_params_list = [mot_bbox_param_interp[padding_num:padding_num+1]]  # First frame
+                all_face_cond_tensors = []
 
-                # Initialize pose and motion piles with padding
-                # Generate padding keypoints visualization
-                padding_keypoints = draw_keypoints(mot_bbox_param_interp[:padding_num], device=device).unsqueeze(2)
-                padding_keypoints = rearrange(padding_keypoints, 'f c b h w -> b c f h w')
-                padding_keypoints = padding_keypoints.to(device=device, dtype=weight_dtype)
-
-                pose_pile = deque(maxlen=temporal_adaptive_step)
-                for i in range(temporal_adaptive_step - 1):
-                    l = i * temporal_window_size
-                    r = (i + 1) * temporal_window_size
-                    pose_fea = pose_guider(padding_keypoints[:, :, l:r])
-                    pose_pile.append(pose_fea)
-                del padding_keypoints
-                clear_gpu_memory()
-
-                # Initialize motion pile with interpolated motion
-                motion_pile = deque(maxlen=temporal_adaptive_step)
-
-                # First frame's motion embedding
+                # Process first frame's face condition
                 first_face_cond = cond_image_processor.preprocess(
                     dri_faces[0], height=224, width=224
                 ).to(device=device, dtype=weight_dtype)
-                first_motion = motion_encoder(first_face_cond.unsqueeze(2))
+                all_face_cond_tensors.append(first_face_cond)
 
-                # Interpolate motion for padding
-                init_motion_hidden = interpolate_tensors(
-                    ref_motion, first_motion, num=padding_num + 1
-                )[:, :-1]
+                # Process remaining frames in batches to save memory
+                batch_chunk_size = 32  # Process 32 frames at a time
+                for batch_start in tqdm(range(1, total_frames, batch_chunk_size), desc='Preprocessing keypoints'):
+                    batch_end = min(batch_start + batch_chunk_size, total_frames)
 
-                for i in range(temporal_adaptive_step - 1):
-                    l = i * temporal_window_size
-                    r = (i + 1) * temporal_window_size
-                    motion_pile.append(init_motion_hidden[:, l:r])
-                del init_motion_hidden
+                    # Prepare batch of target condition tensors
+                    batch_tgt_conds = []
+                    for i in range(batch_start, batch_end):
+                        tgt_cond = cond_image_processor.preprocess(
+                            ori_pose_images[i], height=256, width=256
+                        ).to(device=device, dtype=weight_dtype)
+                        tgt_cond = tgt_cond / 2 + 0.5
+                        batch_tgt_conds.append(tgt_cond)
+                    batch_tgt_tensor = torch.cat(batch_tgt_conds, dim=0)
+
+                    # Use get_kps which is more memory efficient (uses cached kps_ref, kps_frame1)
+                    batch_mot_params, _ = pose_encoder.get_kps(kps_ref, kps_frame1, batch_tgt_tensor)
+                    all_mot_bbox_params_list.append(batch_mot_params)
+
+                    # Process face conditions for this batch
+                    for i in range(batch_start, batch_end):
+                        face_cond = cond_image_processor.preprocess(
+                            dri_faces[i], height=224, width=224
+                        ).to(device=device, dtype=weight_dtype)
+                        all_face_cond_tensors.append(face_cond)
+
+                    # Clear intermediate tensors
+                    del batch_tgt_conds, batch_tgt_tensor, batch_mot_params
+                    clear_gpu_memory()
+
+                all_mot_bbox_params = torch.cat(all_mot_bbox_params_list, dim=0)
+                del all_mot_bbox_params_list
                 clear_gpu_memory()
 
-                # Motion bank for history keyframe mechanism
+                # Combine interpolated padding keypoints with all frame keypoints
+                full_mot_bbox_params = torch.cat([mot_bbox_param_interp[:padding_num], all_mot_bbox_params], dim=0)
+                del all_mot_bbox_params
+                clear_gpu_memory()
+
+                # Generate keypoints visualization in batches to save memory
+                keypoints_chunks = []
+                kp_batch_size = 64
+                for i in range(0, full_mot_bbox_params.shape[0], kp_batch_size):
+                    kp_batch = full_mot_bbox_params[i:i+kp_batch_size]
+                    kp_visual = draw_keypoints(kp_batch, device=device).unsqueeze(2)
+                    keypoints_chunks.append(kp_visual.cpu())  # Move to CPU to save GPU memory
+                    clear_gpu_memory()
+
+                keypoints_full = torch.cat(keypoints_chunks, dim=0).to(device=device, dtype=weight_dtype)
+                del keypoints_chunks, full_mot_bbox_params
+                clear_gpu_memory()
+
+                keypoints_full = rearrange(keypoints_full, 'f c b h w -> b c f h w')
+
+                # Generate pose features for all frames in batches
+                pose_feas_full = []
+                for i in range(0, keypoints_full.shape[2], 64):
+                    pose_fea = pose_guider(keypoints_full[:, :, i:i+64, :, :])
+                    pose_feas_full.append(pose_fea.cpu())  # Move to CPU to save memory
+                    clear_gpu_memory()
+                pose_feas_full = torch.cat(pose_feas_full, dim=2).to(device=device, dtype=weight_dtype)
+                del keypoints_full
+                clear_gpu_memory()
+
+                # Compute motion embeddings for all frames in smaller batches
+                all_face_cond_tensor = torch.cat(all_face_cond_tensors, dim=0).transpose(0, 1).unsqueeze(0)
+                del all_face_cond_tensors
+                clear_gpu_memory()
+
+                motion_hidden_states_all = []
+                motion_batch_size = 64  # Smaller batch size for motion encoding
+                for i in range(0, all_face_cond_tensor.shape[2], motion_batch_size):
+                    motion_hidden = motion_encoder(all_face_cond_tensor[:, :, i:i+motion_batch_size, :, :])
+                    motion_hidden_states_all.append(motion_hidden.cpu())  # Move to CPU
+                    clear_gpu_memory()
+                motion_hidden_states_all = torch.cat(motion_hidden_states_all, dim=1).to(device=device, dtype=weight_dtype)
+                del all_face_cond_tensor
+                clear_gpu_memory()
+
+                # Interpolate motion for padding
+                def interpolate_tensors(a, b, num):
+                    alphas = torch.linspace(0, 1, num, device=a.device, dtype=a.dtype)
+                    view_shape = (1, num) + (1,) * (len(a.shape) - 2)
+                    alphas = alphas.view(view_shape)
+                    return (1 - alphas) * a + alphas * b
+
+                init_motion_hidden = interpolate_tensors(
+                    ref_motion, motion_hidden_states_all[:, :1], num=padding_num + 1
+                )[:, :-1]
+
+                # Full motion sequence: padding + all frames + trailing padding
+                motion_full = torch.cat([
+                    init_motion_hidden,
+                    motion_hidden_states_all,
+                    motion_hidden_states_all[:, -1:].repeat(1, padding_num, 1, 1)
+                ], dim=1)
+
+                # Extend pose features with trailing padding
+                pose_feas_full = torch.cat([
+                    pose_feas_full,
+                    pose_feas_full[:, :, -1:].repeat(1, 1, padding_num, 1, 1)
+                ], dim=2)
+
+                # Initialize piles for sliding window
+                pose_pile = deque([])
+                motion_pile = deque([])
+
+                for i in range(temporal_adaptive_step):
+                    l = i * temporal_window_size
+                    r = (i + 1) * temporal_window_size
+                    pose_pile.append(pose_feas_full[:, :, l:r])
+                    motion_pile.append(motion_full[:, l:r])
+
+                # Process frames using sliding window
+                num_windows = total_frames // temporal_window_size
+                all_decoded_frames = []
+
                 motion_bank = ref_motion
                 num_khf = 0
 
-                # Process video using streaming sliding window
-                all_decoded_frames = []
-                window_idx = 0
-                frame_idx = 0
-
-                print(f"Processing {num_windows} windows with streaming sliding window...")
+                print(f"Processing {num_windows} windows with sliding window generation...")
 
                 for window_idx in tqdm(range(num_windows), desc='Generating video'):
-                    # Get frames for this window (4 frames)
-                    window_start = window_idx * temporal_window_size
-                    window_end = window_start + temporal_window_size
-
-                    # Process this window's frames just-in-time
-                    window_pose_images = ori_pose_images[window_start:window_end]
-                    window_faces = dri_faces[window_start:window_end]
-
-                    # Compute keypoints for this window
-                    if window_idx == 0:
-                        # First window uses interpolated keypoints from padding computation
-                        window_mot_params = mot_bbox_param_interp[padding_num:padding_num + temporal_window_size]
-                    else:
-                        # Subsequent windows use efficient get_kps method
-                        window_tgt_conds = []
-                        for img in window_pose_images:
-                            tgt_cond = cond_image_processor.preprocess(
-                                img, height=256, width=256
-                            ).to(device=device, dtype=weight_dtype)
-                            tgt_cond = tgt_cond / 2 + 0.5
-                            window_tgt_conds.append(tgt_cond)
-                        window_tgt_tensor = torch.cat(window_tgt_conds, dim=0)
-                        window_mot_params, _ = pose_encoder.get_kps(kps_ref, kps_frame1, window_tgt_tensor)
-                        del window_tgt_conds, window_tgt_tensor
-
-                    # Generate keypoints visualization for this window
-                    window_keypoints = draw_keypoints(window_mot_params, device=device).unsqueeze(2)
-                    window_keypoints = rearrange(window_keypoints, 'f c b h w -> b c f h w')
-                    window_keypoints = window_keypoints.to(device=device, dtype=weight_dtype)
-                    window_pose_fea = pose_guider(window_keypoints)
-                    pose_pile.append(window_pose_fea)
-                    del window_keypoints, window_mot_params
-
-                    # Compute motion embeddings for this window
-                    window_face_conds = []
-                    for face in window_faces:
-                        face_cond = cond_image_processor.preprocess(
-                            face, height=224, width=224
-                        ).to(device=device, dtype=weight_dtype)
-                        window_face_conds.append(face_cond)
-                    window_face_tensor = torch.cat(window_face_conds, dim=0).transpose(0, 1).unsqueeze(0)
-                    window_motion = motion_encoder(window_face_tensor)
-                    motion_pile.append(window_motion)
-                    del window_face_conds, window_face_tensor
-
-                    # Add new noisy latents for this window
+                    # Add new latents for this window
                     new_latents = ref_image_latents.unsqueeze(2).repeat(1, 1, temporal_window_size, 1, 1)
                     noise = torch.randn_like(new_latents)
                     new_latents = scheduler.add_noise(new_latents, noise, timesteps[:1])
                     latents_pile.append(new_latents)
-                    del noise
+
+                    # Get next window's pose and motion
+                    window_start = (temporal_adaptive_step + window_idx) * temporal_window_size
+                    if window_start < pose_feas_full.shape[2]:
+                        pose_pile.append(pose_feas_full[:, :, window_start:window_start + temporal_window_size])
+                        motion_pile.append(motion_full[:, window_start:window_start + temporal_window_size])
 
                     # Combine piles for denoising
                     latents_model_input = torch.cat(list(latents_pile), dim=2)
                     motion_hidden_state = torch.cat(list(motion_pile), dim=1)
                     pose_cond_fea = torch.cat(list(pose_pile), dim=2)
 
-                    # Check for keyframe addition (history keyframe mechanism)
+                    # Check for keyframe addition (similar to wrapper.py)
                     add_flag = False
                     if window_idx > temporal_adaptive_step * 2 and motion_bank.shape[1] < 4:
+                        # Calculate distance to motion bank
                         A_flat = motion_bank.view(motion_bank.size(1), -1)
                         B_flat = motion_hidden_state.view(motion_hidden_state.size(1), -1)
                         dist = torch.cdist(B_flat[:1].to(torch.float32), A_flat.to(torch.float32), p=2)
@@ -582,12 +592,10 @@ def main(args):
                         num_khf += 1
 
                     # Update latents pile with denoised results
-                    pile_list = list(latents_pile)
-                    for i in range(len(pile_list)):
-                        pile_list[i] = latents_model_input[:, :, i * temporal_window_size:(i + 1) * temporal_window_size]
-                    latents_pile = deque(pile_list, maxlen=temporal_adaptive_step)
+                    for i in range(len(latents_pile)):
+                        latents_pile[i] = latents_model_input[:, :, i * temporal_window_size:(i + 1) * temporal_window_size]
 
-                    # Pop completed window from piles
+                    # Pop completed window and decode
                     pose_pile.popleft()
                     motion_pile.popleft()
                     completed_latents = latents_pile.popleft()
@@ -600,11 +608,8 @@ def main(args):
                     decoded_frames = (decoded_frames / 2 + 0.5).clamp(0, 1)
                     all_decoded_frames.append(decoded_frames.cpu().float())
 
-                    del completed_latents, decoded_frames, latents_model_input
-                    del motion_hidden_state, pose_cond_fea, noise_pred
-
                     # Clear memory periodically
-                    if window_idx % 5 == 0:
+                    if window_idx % 10 == 0:
                         clear_gpu_memory()
 
                 # Cleanup

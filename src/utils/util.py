@@ -2,7 +2,9 @@ import importlib
 import os
 import os.path as osp
 import shutil
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import av
@@ -98,7 +100,121 @@ def delete_additional_ckpt(base_path, num_keep):
             shutil.rmtree(path_to_dir)
 
 
-def save_videos_from_pil(pil_images, path, fps=8, crf=None):
+def has_audio_stream(video_path):
+    """Check if a video file has an audio stream."""
+    try:
+        container = av.open(video_path)
+        for stream in container.streams:
+            if stream.type == "audio":
+                container.close()
+                return True
+        container.close()
+        return False
+    except Exception:
+        return False
+
+
+def add_audio_to_video(video_path, audio_source_path, output_path=None, verbose=False):
+    """
+    Add audio from audio_source_path to video_path.
+
+    The audio will be trimmed to match the video duration if it's longer.
+    If the video is longer than the audio, the audio will end when it ends.
+
+    Args:
+        video_path: Path to the video file (without audio or with audio to replace)
+        audio_source_path: Path to the source file to extract audio from
+        output_path: Path for the output file. If None, replaces the original video.
+        verbose: If True, print debug information
+
+    Returns:
+        True if audio was successfully added, False otherwise
+    """
+    if not has_audio_stream(audio_source_path):
+        if verbose:
+            print(f"No audio stream found in {audio_source_path}")
+        return False
+
+    if output_path is None:
+        output_path = video_path
+
+    # Create a temporary file for the output
+    temp_output = None
+    try:
+        # Get video duration
+        video_container = av.open(video_path)
+        video_stream = next(s for s in video_container.streams if s.type == "video")
+        video_duration = float(video_stream.duration * video_stream.time_base)
+        video_container.close()
+
+        if verbose:
+            print(f"Video duration: {video_duration:.2f}s")
+
+        # Create temp file in the same directory as output to ensure same filesystem
+        output_dir = os.path.dirname(output_path) or "."
+        temp_fd, temp_output = tempfile.mkstemp(suffix=".mp4", dir=output_dir)
+        os.close(temp_fd)
+
+        # Use ffmpeg to combine video and audio with proper duration handling
+        # -t limits the output duration to the video duration
+        # -shortest would stop when the shortest stream ends, but we use -t for more control
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", video_path,
+            "-i", audio_source_path,
+            "-c:v", "copy",
+            "-c:a", "aac",
+            "-map", "0:v:0",
+            "-map", "1:a:0",
+            "-t", str(video_duration),
+            "-shortest",
+            temp_output
+        ]
+
+        if verbose:
+            print(f"Running: {' '.join(cmd)}")
+
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True
+        )
+
+        if result.returncode != 0:
+            if verbose:
+                print(f"ffmpeg error: {result.stderr}")
+            return False
+
+        # Replace the original file with the new one
+        shutil.move(temp_output, output_path)
+        temp_output = None  # Mark as moved
+
+        if verbose:
+            print(f"Successfully added audio to {output_path}")
+        return True
+
+    except Exception as e:
+        if verbose:
+            print(f"Error adding audio: {e}")
+        return False
+    finally:
+        # Clean up temp file if it wasn't moved
+        if temp_output and os.path.exists(temp_output):
+            os.remove(temp_output)
+
+
+def save_videos_from_pil(pil_images, path, fps=8, crf=None, audio_source=None):
+    """
+    Save a list of PIL images as a video file.
+
+    Args:
+        pil_images: List of PIL Image objects
+        path: Output path for the video
+        fps: Frames per second
+        crf: Constant Rate Factor for video quality (lower = better quality)
+        audio_source: Optional path to a video file to extract audio from.
+                     The audio will be trimmed to match the output video duration.
+    """
     import av
 
     save_fmt = Path(path).suffix
@@ -144,8 +260,12 @@ def save_videos_from_pil(pil_images, path, fps=8, crf=None):
     else:
         raise ValueError("Unsupported file type. Use .mp4 or .gif.")
 
+    # Add audio from source video if provided (only for mp4)
+    if audio_source is not None and save_fmt == ".mp4":
+        add_audio_to_video(path, audio_source, verbose=False)
 
-def save_videos_grid(videos_, path: str, rescale=False, n_rows=6, fps=8, crf=None):
+
+def save_videos_grid(videos_, path: str, rescale=False, n_rows=6, fps=8, crf=None, audio_source=None):
     if not isinstance(videos_, list): videos_ = [videos_]
 
     outputs = []
@@ -167,7 +287,7 @@ def save_videos_grid(videos_, path: str, rescale=False, n_rows=6, fps=8, crf=Non
         outputs.append(output)
 
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    save_videos_from_pil(outputs, path, fps, crf)
+    save_videos_from_pil(outputs, path, fps, crf, audio_source=audio_source)
 
 
 def save_videos_grid_ori(videos: torch.Tensor, path: str, rescale=False, n_rows=6, fps=8):

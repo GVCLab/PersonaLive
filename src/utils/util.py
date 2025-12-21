@@ -262,7 +262,7 @@ def save_videos_from_pil(pil_images, path, fps=8, crf=None, audio_source=None):
 
     # Add audio from source video if provided (only for mp4)
     if audio_source is not None and save_fmt == ".mp4":
-        add_audio_to_video(path, audio_source, verbose=False)
+        add_audio_to_video(path, audio_source, verbose=True)
 
 
 def save_videos_grid(videos_, path: str, rescale=False, n_rows=6, fps=8, crf=None, audio_source=None):

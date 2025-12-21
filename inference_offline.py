@@ -1,4 +1,5 @@
 import argparse
+import gc
 import os
 import sys
 from datetime import datetime
@@ -26,6 +27,13 @@ from src.liveportrait.motion_extractor import MotionExtractor
 from src.models.pose_guider import PoseGuider
 from tqdm import tqdm
 
+
+def clear_gpu_memory():
+    """Clear GPU memory cache to reduce VRAM usage."""
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, default='configs/prompts/personalive_offline.yaml')
@@ -36,6 +44,10 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--use_xformers", type=bool, default=True)
+    parser.add_argument("--batch_size", type=int, default=0,
+                        help="Number of frames to process per batch. Set to 0 to process all frames at once (default). "
+                             "Use smaller values (e.g., 16, 32) to reduce VRAM usage on GPUs with limited memory. "
+                             "Must be divisible by 4 (temporal_window_size).")
     args = parser.parse_args()
 
     return args
@@ -223,20 +235,82 @@ def main(args):
             ori_pose_tensor = torch.stack(ori_pose_tensor_list, dim=0)  # (f, c, h, w)
             ori_pose_tensor = ori_pose_tensor.transpose(0, 1).unsqueeze(0)
 
-            gen_video = pipe(
-                ori_pose_images,
-                ref_image_pil,
-                dri_faces,
-                ref_face_pil,
-                width,
-                height,
-                len(dri_faces),
-                num_inference_steps=4,
-                guidance_scale=1.0,
-                generator=generator,
-                temporal_window_size = 4,
-                temporal_adaptive_step = 4,
-            ).videos
+            # Determine batch size for processing
+            temporal_window_size = 4
+            temporal_adaptive_step = 4
+            total_frames = len(dri_faces)
+
+            # If batch_size is 0 or larger than total frames, process all at once
+            if args.batch_size <= 0 or args.batch_size >= total_frames:
+                batch_size = total_frames
+            else:
+                # Ensure batch_size is divisible by temporal_window_size
+                batch_size = (args.batch_size // temporal_window_size) * temporal_window_size
+                if batch_size < temporal_window_size:
+                    batch_size = temporal_window_size
+
+            # Process in batches if needed
+            if batch_size < total_frames:
+                print(f"Processing {total_frames} frames in batches of {batch_size} to reduce VRAM usage...")
+                gen_video_batches = []
+
+                for batch_start in tqdm(range(0, total_frames, batch_size), desc='Processing batches'):
+                    batch_end = min(batch_start + batch_size, total_frames)
+                    # Ensure batch length is divisible by temporal_window_size
+                    batch_len = ((batch_end - batch_start) // temporal_window_size) * temporal_window_size
+                    if batch_len == 0:
+                        continue
+                    batch_end = batch_start + batch_len
+
+                    # Get batch data
+                    batch_ori_pose_images = ori_pose_images[batch_start:batch_end]
+                    batch_dri_faces = dri_faces[batch_start:batch_end]
+
+                    # Reset generator for consistent results within batch
+                    batch_generator = torch.Generator(device=device)
+                    batch_generator.manual_seed(42 + batch_start)
+
+                    # Process batch
+                    batch_video = pipe(
+                        batch_ori_pose_images,
+                        ref_image_pil,
+                        batch_dri_faces,
+                        ref_face_pil,
+                        width,
+                        height,
+                        len(batch_dri_faces),
+                        num_inference_steps=4,
+                        guidance_scale=1.0,
+                        generator=batch_generator,
+                        temporal_window_size=temporal_window_size,
+                        temporal_adaptive_step=temporal_adaptive_step,
+                    ).videos
+
+                    gen_video_batches.append(batch_video)
+
+                    # Clear GPU memory after each batch
+                    clear_gpu_memory()
+
+                # Concatenate all batches along the frame dimension
+                gen_video = torch.cat(gen_video_batches, dim=2)
+                del gen_video_batches
+                clear_gpu_memory()
+            else:
+                # Process all frames at once (original behavior)
+                gen_video = pipe(
+                    ori_pose_images,
+                    ref_image_pil,
+                    dri_faces,
+                    ref_face_pil,
+                    width,
+                    height,
+                    len(dri_faces),
+                    num_inference_steps=4,
+                    guidance_scale=1.0,
+                    generator=generator,
+                    temporal_window_size=temporal_window_size,
+                    temporal_adaptive_step=temporal_adaptive_step,
+                ).videos
 
             #Concat it with pose tensor
             video = torch.cat([ref_tensor, face_tensor, ori_pose_tensor, gen_video], dim=0)

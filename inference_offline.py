@@ -369,59 +369,111 @@ def main(args):
                 ref_motion = motion_encoder(ref_face_cond_tensor.unsqueeze(2))
 
                 # Precompute all driving face motion embeddings and keypoints
+                # Use memory-efficient approach: process in batches and use get_kps after first frame
                 print("Precomputing motion embeddings and keypoints...")
-                all_tgt_cond_tensors = []
-                all_face_cond_tensors = []
-                for i, pose_img in enumerate(tqdm(ori_pose_images, desc='Preprocessing')):
-                    tgt_cond = cond_image_processor.preprocess(
-                        pose_img, height=256, width=256
-                    ).to(device=device, dtype=weight_dtype)
-                    tgt_cond = tgt_cond / 2 + 0.5
-                    all_tgt_cond_tensors.append(tgt_cond)
 
-                    face_cond = cond_image_processor.preprocess(
-                        dri_faces[i], height=224, width=224
-                    ).to(device=device, dtype=weight_dtype)
-                    all_face_cond_tensors.append(face_cond)
+                # First, preprocess the first frame to get reference keypoints (like wrapper.py)
+                first_pose_img = ori_pose_images[0]
+                first_tgt_cond = cond_image_processor.preprocess(
+                    first_pose_img, height=256, width=256
+                ).to(device=device, dtype=weight_dtype)
+                first_tgt_cond = first_tgt_cond / 2 + 0.5
 
                 # Get interpolated keypoints for padding (from reference to first frame)
-                first_tgt_cond = all_tgt_cond_tensors[0]
-                mot_bbox_param_interp = pose_encoder.interpolate_kps(
+                # This also gives us the cached kps_ref and kps_frame1 for efficient subsequent processing
+                mot_bbox_param_interp, kps_ref, kps_frame1, _ = pose_encoder.interpolate_kps_online(
                     ref_cond_tensor, first_tgt_cond, num_interp=padding_num + 1
                 )
 
-                # Get keypoints for all frames
-                all_mot_bbox_params = [mot_bbox_param_interp[padding_num:padding_num+1]]  # First frame
-                for i in range(1, total_frames):
-                    # For subsequent frames, we need the keypoints relative to reference
-                    mot_param = pose_encoder.interpolate_kps(
-                        ref_cond_tensor, all_tgt_cond_tensors[i], num_interp=1
-                    )
-                    all_mot_bbox_params.append(mot_param)
-                all_mot_bbox_params = torch.cat(all_mot_bbox_params, dim=0)
+                # Process all frame keypoints in batches using the efficient get_kps method
+                # This avoids calling interpolate_kps for each frame which is memory-intensive
+                all_mot_bbox_params_list = [mot_bbox_param_interp[padding_num:padding_num+1]]  # First frame
+                all_face_cond_tensors = []
+
+                # Process first frame's face condition
+                first_face_cond = cond_image_processor.preprocess(
+                    dri_faces[0], height=224, width=224
+                ).to(device=device, dtype=weight_dtype)
+                all_face_cond_tensors.append(first_face_cond)
+
+                # Process remaining frames in batches to save memory
+                batch_chunk_size = 32  # Process 32 frames at a time
+                for batch_start in tqdm(range(1, total_frames, batch_chunk_size), desc='Preprocessing keypoints'):
+                    batch_end = min(batch_start + batch_chunk_size, total_frames)
+
+                    # Prepare batch of target condition tensors
+                    batch_tgt_conds = []
+                    for i in range(batch_start, batch_end):
+                        tgt_cond = cond_image_processor.preprocess(
+                            ori_pose_images[i], height=256, width=256
+                        ).to(device=device, dtype=weight_dtype)
+                        tgt_cond = tgt_cond / 2 + 0.5
+                        batch_tgt_conds.append(tgt_cond)
+                    batch_tgt_tensor = torch.cat(batch_tgt_conds, dim=0)
+
+                    # Use get_kps which is more memory efficient (uses cached kps_ref, kps_frame1)
+                    batch_mot_params, _ = pose_encoder.get_kps(kps_ref, kps_frame1, batch_tgt_tensor)
+                    all_mot_bbox_params_list.append(batch_mot_params)
+
+                    # Process face conditions for this batch
+                    for i in range(batch_start, batch_end):
+                        face_cond = cond_image_processor.preprocess(
+                            dri_faces[i], height=224, width=224
+                        ).to(device=device, dtype=weight_dtype)
+                        all_face_cond_tensors.append(face_cond)
+
+                    # Clear intermediate tensors
+                    del batch_tgt_conds, batch_tgt_tensor, batch_mot_params
+                    clear_gpu_memory()
+
+                all_mot_bbox_params = torch.cat(all_mot_bbox_params_list, dim=0)
+                del all_mot_bbox_params_list
+                clear_gpu_memory()
 
                 # Combine interpolated padding keypoints with all frame keypoints
                 full_mot_bbox_params = torch.cat([mot_bbox_param_interp[:padding_num], all_mot_bbox_params], dim=0)
+                del all_mot_bbox_params
+                clear_gpu_memory()
 
-                # Generate keypoints visualization
-                keypoints_full = draw_keypoints(full_mot_bbox_params, device=device).unsqueeze(2)
+                # Generate keypoints visualization in batches to save memory
+                keypoints_chunks = []
+                kp_batch_size = 64
+                for i in range(0, full_mot_bbox_params.shape[0], kp_batch_size):
+                    kp_batch = full_mot_bbox_params[i:i+kp_batch_size]
+                    kp_visual = draw_keypoints(kp_batch, device=device).unsqueeze(2)
+                    keypoints_chunks.append(kp_visual.cpu())  # Move to CPU to save GPU memory
+                    clear_gpu_memory()
+
+                keypoints_full = torch.cat(keypoints_chunks, dim=0).to(device=device, dtype=weight_dtype)
+                del keypoints_chunks, full_mot_bbox_params
+                clear_gpu_memory()
+
                 keypoints_full = rearrange(keypoints_full, 'f c b h w -> b c f h w')
-                keypoints_full = keypoints_full.to(device=device, dtype=weight_dtype)
 
-                # Generate pose features for all frames
+                # Generate pose features for all frames in batches
                 pose_feas_full = []
-                for i in range(0, keypoints_full.shape[2], 256):
-                    pose_fea = pose_guider(keypoints_full[:, :, i:i+256, :, :])
-                    pose_feas_full.append(pose_fea)
-                pose_feas_full = torch.cat(pose_feas_full, dim=2)
+                for i in range(0, keypoints_full.shape[2], 64):
+                    pose_fea = pose_guider(keypoints_full[:, :, i:i+64, :, :])
+                    pose_feas_full.append(pose_fea.cpu())  # Move to CPU to save memory
+                    clear_gpu_memory()
+                pose_feas_full = torch.cat(pose_feas_full, dim=2).to(device=device, dtype=weight_dtype)
+                del keypoints_full
+                clear_gpu_memory()
 
-                # Compute motion embeddings for all frames
+                # Compute motion embeddings for all frames in smaller batches
                 all_face_cond_tensor = torch.cat(all_face_cond_tensors, dim=0).transpose(0, 1).unsqueeze(0)
+                del all_face_cond_tensors
+                clear_gpu_memory()
+
                 motion_hidden_states_all = []
-                for i in range(0, all_face_cond_tensor.shape[2], 256):
-                    motion_hidden = motion_encoder(all_face_cond_tensor[:, :, i:i+256, :, :])
-                    motion_hidden_states_all.append(motion_hidden)
-                motion_hidden_states_all = torch.cat(motion_hidden_states_all, dim=1)
+                motion_batch_size = 64  # Smaller batch size for motion encoding
+                for i in range(0, all_face_cond_tensor.shape[2], motion_batch_size):
+                    motion_hidden = motion_encoder(all_face_cond_tensor[:, :, i:i+motion_batch_size, :, :])
+                    motion_hidden_states_all.append(motion_hidden.cpu())  # Move to CPU
+                    clear_gpu_memory()
+                motion_hidden_states_all = torch.cat(motion_hidden_states_all, dim=1).to(device=device, dtype=weight_dtype)
+                del all_face_cond_tensor
+                clear_gpu_memory()
 
                 # Interpolate motion for padding
                 def interpolate_tensors(a, b, num):

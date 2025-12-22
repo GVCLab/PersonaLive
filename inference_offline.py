@@ -404,20 +404,28 @@ def main(args):
                 del ref_face_cond_tensor
                 clear_gpu_memory()
 
-                # Process first frame to get cached keypoints (like wrapper.py)
-                first_pose_img = ori_pose_images[0]
-                first_tgt_cond = cond_image_processor.preprocess(
-                    first_pose_img, height=256, width=256
-                ).to(device=device, dtype=weight_dtype)
-                first_tgt_cond = first_tgt_cond / 2 + 0.5
+                # Process first window frames to get cached keypoints (like wrapper.py)
+                # We need to pass all frames of the first window to get proper synchronization
+                first_window_pose_imgs = ori_pose_images[:temporal_window_size]
+                first_window_tgt_conds = []
+                for img in first_window_pose_imgs:
+                    tgt_cond = cond_image_processor.preprocess(
+                        img, height=256, width=256
+                    ).to(device=device, dtype=weight_dtype)
+                    tgt_cond = tgt_cond / 2 + 0.5
+                    first_window_tgt_conds.append(tgt_cond)
+                first_window_tgt_tensor = torch.cat(first_window_tgt_conds, dim=0)
 
-                # Get interpolated keypoints for padding + first window + cached refs
-                # We need padding_num + temporal_window_size frames to cover both the
-                # padding frames and the first window's frames
-                mot_bbox_param_interp, kps_ref, kps_frame1, _ = pose_encoder.interpolate_kps_online(
-                    ref_cond_tensor, first_tgt_cond, num_interp=padding_num + temporal_window_size
+                # Get interpolated keypoints for padding frames + first window's actual keypoints
+                # interpolate_kps_online returns:
+                # - kp_intrep: padding interpolated frames + actual keypoints for first_window_tgt_tensor
+                # - kps_ref: reference keypoints (cached for subsequent windows)
+                # - kps_frame1: first frame keypoints (cached for subsequent windows)
+                # - kp_dri: actual keypoints for first_window_tgt_tensor (used directly)
+                mot_bbox_param_interp, kps_ref, kps_frame1, first_window_kps = pose_encoder.interpolate_kps_online(
+                    ref_cond_tensor, first_window_tgt_tensor, num_interp=padding_num + 1
                 )
-                del ref_cond_tensor, first_tgt_cond
+                del ref_cond_tensor, first_window_tgt_conds, first_window_tgt_tensor
                 clear_gpu_memory()
 
                 # Initialize latents pile with padding (12 frames)
@@ -495,10 +503,11 @@ def main(args):
 
                     # Compute keypoints for this window
                     if window_idx == 0:
-                        # First window uses interpolated keypoints from padding computation
-                        window_mot_params = mot_bbox_param_interp[padding_num:padding_num + temporal_window_size]
-                        # Free mot_bbox_param_interp as it's no longer needed after first window
-                        del mot_bbox_param_interp
+                        # First window uses actual keypoints from the driving video
+                        # (returned as kp_dri from interpolate_kps_online)
+                        window_mot_params = first_window_kps
+                        # Free first_window_kps and mot_bbox_param_interp as they're no longer needed
+                        del first_window_kps, mot_bbox_param_interp
                         clear_gpu_memory()
                     else:
                         # Subsequent windows use efficient get_kps method

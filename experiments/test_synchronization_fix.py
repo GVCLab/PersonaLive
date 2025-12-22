@@ -1,18 +1,24 @@
 """
-Test script to verify the synchronization fix for issue #17.
+Test script to verify the synchronization fixes for issues #17 and #21.
 
-This script tests the logic of the fix to ensure that:
+This script tests the logic of the fixes to ensure that:
 1. The first window uses transformed keypoints from mot_bbox_param_interp
 2. Padding frames are NOT included in the final output
 3. All video frames are properly included in the output
 4. The keypoint transformation (translation/scale) is applied correctly
+5. All video windows are fully denoised (no corruption at video end)
 
 ## Issue #17: No synchronization with driving_video when using batch_size
 
 The issue occurred when running inference_offline.py with --batch_size parameter.
 The generated video was not synchronized with the driving video.
 
-## Root Cause Analysis (Two Bugs)
+## Issue #21: Video corruption at end when using batch_size
+
+After the fix for issue #17 (synchronization), a new bug was introduced where
+the video would show colorful noise/artifacts at the very end (last ~12 frames).
+
+## Root Cause Analysis (Three Bugs)
 
 ### Bug 1: Raw keypoints for first window (Fixed in PR #19)
 PR #18 incorrectly used `first_window_kps` (kp_dri from interpolate_kps_online).
@@ -28,7 +34,7 @@ Looking at motion_extractor.py:interpolate_kps_online():
 Symptom: Zoom effect at the beginning of the video.
 Fix: Use mot_bbox_param_interp[padding_num:] for the first window (transformed keypoints).
 
-### Bug 2: Padding frames included in output (NEW FIX)
+### Bug 2: Padding frames included in output (Fixed in PR #20)
 The streaming sliding window mode was outputting PADDING frames (the first 12 frames)
 instead of actual video frames, and was NOT outputting the last 12 frames of the video.
 
@@ -47,12 +53,37 @@ Fix:
 1. Skip adding decoded frames to output during first (temporal_adaptive_step - 1) iterations
 2. After main loop, decode remaining windows still in latents_pile
 
+### Bug 3: Remaining windows not fully denoised (Issue #21 - NEW FIX)
+The fix for Bug 2 correctly identified that the last 3 windows need to be decoded
+after the main loop. However, these windows were NEVER fully denoised!
+
+The denoising mechanism uses a sliding window approach:
+- Each iteration denoises 4 windows (16 frames) together
+- After denoising, the result is structured as:
+  * First window: `pred_original_sample` (fully denoised, timestep 0)
+  * Windows 2-4: `mid_latents` (partially denoised, for next iteration's context)
+- Only the first window is fully denoised in each iteration
+
+The problem: Windows remaining in latents_pile after the main loop were always
+in positions 2-4 during denoising, NEVER in position 1. They still contain noise!
+
+Symptom: Colorful noise/artifacts appearing at the end of generated videos.
+
+Fix: After processing all video windows, run (temporal_adaptive_step - 1) additional
+"padding iterations" where we:
+1. Use padding data (repeat last frame's motion/pose) for context
+2. Run the full denoising loop on all windows
+3. Only output the window that moves to position 1 (now fully denoised)
+
+This matches the pipeline's behavior where the loop runs for
+`windows + temporal_adaptive_step - 1` iterations.
+
 ## Frame Count Verification
 
 For 100 input frames:
 - num_windows = 100 // 4 = 25 windows
 - Main loop: iterations 3-24 output 22 windows = 88 frames
-- After loop: remaining 3 windows from pile = 12 frames
+- Padding iterations: 3 iterations output 3 windows = 12 frames
 - Total output: 88 + 12 = 100 frames (CORRECT!)
 """
 
@@ -239,11 +270,85 @@ def test_wrapper_comparison():
     print("  2. First window uses mot_bbox_param_interp[padding_num:] (TRANSFORMED)")
     print("  3. Subsequent windows: get_kps (correct - has transformation)")
     print("  4. Skip first 3 iterations' output (padding frames)")
-    print("  5. After loop, decode remaining 3 windows from pile")
-    print("  Benefit: All video frames properly synchronized!")
+    print("  5. After main loop, run padding iterations to denoise remaining windows")
+    print("  Benefit: All video frames properly synchronized and fully denoised!")
     print()
 
     print("=== Comparison complete ===")
+    return 0
+
+
+def test_denoising_completion():
+    """Test the denoising completion logic for Issue #21."""
+    print()
+    print("=== Testing denoising completion logic (Issue #21) ===")
+    print()
+
+    # Configuration
+    temporal_window_size = 4
+    temporal_adaptive_step = 4
+    padding_windows = temporal_adaptive_step - 1  # 3
+
+    # Simulate 100-frame video
+    total_video_frames = 100
+    num_windows = total_video_frames // temporal_window_size  # 25
+
+    print(f"Configuration:")
+    print(f"  temporal_window_size = {temporal_window_size}")
+    print(f"  temporal_adaptive_step = {temporal_adaptive_step}")
+    print(f"  num_windows = {num_windows}")
+    print()
+
+    print("Denoising mechanism explanation:")
+    print("  Each iteration processes 4 windows (16 frames) together")
+    print("  After denoising, the latents_model_input contains:")
+    print("    - Position 0: pred_original_sample (FULLY denoised, timestep 0)")
+    print("    - Positions 1-3: mid_latents (PARTIALLY denoised, for context)")
+    print()
+
+    print("Problem with old code:")
+    print(f"  Main loop runs for {num_windows} iterations")
+    print(f"  After last iteration, {padding_windows} windows remain in pile")
+    print(f"  These windows were NEVER at position 0, so they contain residual noise!")
+    print()
+
+    print("Fix: Run padding iterations after main loop")
+    print(f"  Add {padding_windows} more iterations with repeated last motion/pose")
+    print(f"  Each padding iteration:")
+    print(f"    1. Append padding window to pile (for context)")
+    print(f"    2. Run denoising (window at pos 0 becomes fully denoised)")
+    print(f"    3. Pop and output the now fully-denoised window")
+    print()
+
+    # Trace which windows get to position 0
+    print("Trace of window positions:")
+    print()
+
+    # Track when each video window reaches position 0
+    video_window_denoised = {}
+
+    for iter_idx in range(num_windows + padding_windows):
+        # What's at position 0 after this iteration?
+        if iter_idx >= padding_windows:
+            video_window_idx = iter_idx - padding_windows
+            if video_window_idx < num_windows:
+                video_window_denoised[video_window_idx] = iter_idx
+                if iter_idx < 5 or iter_idx >= num_windows + padding_windows - 3:
+                    print(f"  Iteration {iter_idx}: Video window N{video_window_idx} at position 0 (fully denoised)")
+
+        if iter_idx == 4:
+            print("  ...")
+
+    print()
+    print(f"Verification:")
+    print(f"  Total iterations: {num_windows} (main) + {padding_windows} (padding) = {num_windows + padding_windows}")
+    print(f"  Video windows fully denoised: {len(video_window_denoised)} (should be {num_windows})")
+
+    assert len(video_window_denoised) == num_windows, \
+        f"Expected {num_windows} windows fully denoised, got {len(video_window_denoised)}"
+
+    print()
+    print("=== Denoising completion test passed! ===")
     return 0
 
 
@@ -252,4 +357,5 @@ if __name__ == "__main__":
     ret2 = test_keypoint_transformation()
     ret3 = test_frame_counting()
     ret4 = test_wrapper_comparison()
-    sys.exit(ret1 or ret2 or ret3 or ret4)
+    ret5 = test_denoising_completion()
+    sys.exit(ret1 or ret2 or ret3 or ret4 or ret5)

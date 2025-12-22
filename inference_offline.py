@@ -628,19 +628,37 @@ def main(args):
                     completed_latents = latents_pile.popleft()
 
                     # Decode latents to frames
-                    completed_latents = 1 / 0.18215 * completed_latents
-                    completed_latents = rearrange(completed_latents, "b c f h w -> (b f) c h w")
-                    decoded_frames = vae.decode(completed_latents).sample
-                    decoded_frames = rearrange(decoded_frames, "b c h w -> b h w c")
-                    decoded_frames = (decoded_frames / 2 + 0.5).clamp(0, 1)
-                    all_decoded_frames.append(decoded_frames.cpu().float())
+                    # Skip the first (temporal_adaptive_step - 1) windows as they contain padding frames
+                    # that were initialized from interpolated reference image latents, not actual video frames
+                    if window_idx >= temporal_adaptive_step - 1:
+                        completed_latents = 1 / 0.18215 * completed_latents
+                        completed_latents = rearrange(completed_latents, "b c f h w -> (b f) c h w")
+                        decoded_frames = vae.decode(completed_latents).sample
+                        decoded_frames = rearrange(decoded_frames, "b c h w -> b h w c")
+                        decoded_frames = (decoded_frames / 2 + 0.5).clamp(0, 1)
+                        all_decoded_frames.append(decoded_frames.cpu().float())
+                        del decoded_frames
 
-                    del completed_latents, decoded_frames, latents_model_input
+                    del completed_latents, latents_model_input
                     del motion_hidden_state, pose_cond_fea
 
                     # Clear memory periodically
                     if window_idx % 5 == 0:
                         clear_gpu_memory()
+
+                # Decode remaining windows from the latents pile
+                # After the main loop, there are (temporal_adaptive_step - 1) windows still in the pile
+                # that need to be decoded (these contain the last video frames)
+                while len(latents_pile) > 0:
+                    remaining_latents = latents_pile.popleft()
+                    remaining_latents = 1 / 0.18215 * remaining_latents
+                    remaining_latents = rearrange(remaining_latents, "b c f h w -> (b f) c h w")
+                    decoded_frames = vae.decode(remaining_latents).sample
+                    decoded_frames = rearrange(decoded_frames, "b c h w -> b h w c")
+                    decoded_frames = (decoded_frames / 2 + 0.5).clamp(0, 1)
+                    all_decoded_frames.append(decoded_frames.cpu().float())
+                    del remaining_latents, decoded_frames
+                    clear_gpu_memory()
 
                 # Cleanup
                 reference_control_reader.clear()

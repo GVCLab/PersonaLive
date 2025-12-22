@@ -416,13 +416,14 @@ def main(args):
                     first_window_tgt_conds.append(tgt_cond)
                 first_window_tgt_tensor = torch.cat(first_window_tgt_conds, dim=0)
 
-                # Get interpolated keypoints for padding frames + first window's actual keypoints
+                # Get interpolated keypoints for padding frames + first window's transformed keypoints
                 # interpolate_kps_online returns:
-                # - kp_intrep: padding interpolated frames + actual keypoints for first_window_tgt_tensor
+                # - kp_intrep: padding interpolated frames (0 to padding_num-1) + transformed keypoints
+                #              for first_window_tgt_tensor (padding_num to padding_num + window_size - 1)
                 # - kps_ref: reference keypoints (cached for subsequent windows)
                 # - kps_frame1: first frame keypoints (cached for subsequent windows)
-                # - kp_dri: actual keypoints for first_window_tgt_tensor (used directly)
-                mot_bbox_param_interp, kps_ref, kps_frame1, first_window_kps = pose_encoder.interpolate_kps_online(
+                # - kp_dri: raw keypoints (NOT used - they lack the translation/scale transformation)
+                mot_bbox_param_interp, kps_ref, kps_frame1, _ = pose_encoder.interpolate_kps_online(
                     ref_cond_tensor, first_window_tgt_tensor, num_interp=padding_num + 1
                 )
                 del ref_cond_tensor, first_window_tgt_conds, first_window_tgt_tensor
@@ -503,11 +504,14 @@ def main(args):
 
                     # Compute keypoints for this window
                     if window_idx == 0:
-                        # First window uses actual keypoints from the driving video
-                        # (returned as kp_dri from interpolate_kps_online)
-                        window_mot_params = first_window_kps
-                        # Free first_window_kps and mot_bbox_param_interp as they're no longer needed
-                        del first_window_kps, mot_bbox_param_interp
+                        # First window uses transformed keypoints from mot_bbox_param_interp
+                        # (frames padding_num to padding_num + temporal_window_size)
+                        # These keypoints have proper translation and scale applied relative to reference image,
+                        # unlike first_window_kps (kp_dri) which has raw driving video positions.
+                        # This matches wrapper.py behavior where mot_bbox_param is used directly.
+                        window_mot_params = mot_bbox_param_interp[padding_num:]
+                        # Free mot_bbox_param_interp as it's no longer needed after first window
+                        del mot_bbox_param_interp
                         clear_gpu_memory()
                     else:
                         # Subsequent windows use efficient get_kps method

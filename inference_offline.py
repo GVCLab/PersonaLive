@@ -646,19 +646,96 @@ def main(args):
                     if window_idx % 5 == 0:
                         clear_gpu_memory()
 
-                # Decode remaining windows from the latents pile
-                # After the main loop, there are (temporal_adaptive_step - 1) windows still in the pile
-                # that need to be decoded (these contain the last video frames)
-                while len(latents_pile) > 0:
-                    remaining_latents = latents_pile.popleft()
-                    remaining_latents = 1 / 0.18215 * remaining_latents
-                    remaining_latents = rearrange(remaining_latents, "b c f h w -> (b f) c h w")
-                    decoded_frames = vae.decode(remaining_latents).sample
+                    # Save last window's motion and pose for padding iterations
+                    last_window_motion = window_motion
+                    last_window_pose_fea = window_pose_fea
+
+                # Process additional padding iterations to fully denoise remaining windows
+                # The windows remaining in latents_pile were never in the "first position" during
+                # denoising, so they still contain noise. We need to run additional iterations
+                # with padding (repeating last frame's motion/pose) to fully denoise them.
+                # This matches the pipeline behavior where the loop runs for
+                # windows + temporal_adaptive_step - 1 iterations.
+                print(f"Processing {temporal_adaptive_step - 1} padding iterations to denoise final windows...")
+
+                for padding_idx in tqdm(range(temporal_adaptive_step - 1), desc='Denoising final windows'):
+                    # Use padding: repeat the last window's motion and pose
+                    pose_pile.append(last_window_pose_fea)
+                    motion_pile.append(last_window_motion)
+
+                    # Add padding latents (using reference image latents with noise)
+                    # These won't be in the output, they're just for denoising context
+                    new_latents = ref_image_latents.unsqueeze(2).repeat(1, 1, temporal_window_size, 1, 1)
+                    noise = torch.randn_like(new_latents)
+                    new_latents = scheduler.add_noise(new_latents, noise, timesteps[:1])
+                    latents_pile.append(new_latents)
+                    del noise
+
+                    # Combine piles for denoising
+                    latents_model_input = torch.cat(list(latents_pile), dim=2)
+                    motion_hidden_state = torch.cat(list(motion_pile), dim=1)
+                    pose_cond_fea = torch.cat(list(pose_pile), dim=2)
+
+                    # Denoising loop
+                    for j in range(jump):
+                        ut = reversed(timesteps[j::jump]).repeat_interleave(temporal_window_size, dim=0)
+                        ut = torch.stack([ut]).to(device)
+                        ut = rearrange(ut, 'b f -> (b f)')
+
+                        noise_pred = denoising_unet(
+                            latents_model_input,
+                            ut,
+                            encoder_hidden_states=[encoder_hidden_states, motion_hidden_state],
+                            pose_cond_fea=pose_cond_fea,
+                            return_dict=False,
+                        )[0]
+
+                        clip_length = noise_pred.shape[2]
+                        mid_noise_pred = rearrange(noise_pred, 'b c f h w -> (b f) c h w')
+                        del noise_pred
+                        mid_latents = rearrange(latents_model_input, 'b c f h w -> (b f) c h w')
+
+                        mid_latents, pred_original_sample = scheduler.step(
+                            mid_noise_pred, ut, mid_latents, generator=generator, return_dict=False
+                        )
+                        del mid_noise_pred, ut
+
+                        mid_latents = rearrange(mid_latents, '(b f) c h w -> b c f h w', f=clip_length)
+                        pred_original_sample = rearrange(pred_original_sample, '(b f) c h w -> b c f h w', f=clip_length)
+
+                        latents_model_input = torch.cat([
+                            pred_original_sample[:, :, :temporal_window_size],
+                            mid_latents[:, :, temporal_window_size:]
+                        ], dim=2)
+                        del mid_latents
+                        latents_model_input = latents_model_input.to(dtype=weight_dtype)
+
+                    del pred_original_sample
+
+                    # Update latents pile with denoised results
+                    pile_list = list(latents_pile)
+                    for i in range(len(pile_list)):
+                        pile_list[i] = latents_model_input[:, :, i * temporal_window_size:(i + 1) * temporal_window_size]
+                    latents_pile = deque(pile_list, maxlen=temporal_adaptive_step)
+
+                    # Pop completed window from piles
+                    pose_pile.popleft()
+                    motion_pile.popleft()
+                    completed_latents = latents_pile.popleft()
+
+                    # Decode the now fully-denoised video window
+                    completed_latents = 1 / 0.18215 * completed_latents
+                    completed_latents = rearrange(completed_latents, "b c f h w -> (b f) c h w")
+                    decoded_frames = vae.decode(completed_latents).sample
                     decoded_frames = rearrange(decoded_frames, "b c h w -> b h w c")
                     decoded_frames = (decoded_frames / 2 + 0.5).clamp(0, 1)
                     all_decoded_frames.append(decoded_frames.cpu().float())
-                    del remaining_latents, decoded_frames
+                    del decoded_frames, completed_latents, latents_model_input
+                    del motion_hidden_state, pose_cond_fea
                     clear_gpu_memory()
+
+                # Clean up last window references
+                del last_window_motion, last_window_pose_fea
 
                 # Cleanup
                 reference_control_reader.clear()

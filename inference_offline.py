@@ -404,9 +404,11 @@ def main(args):
                 ).to(device=device, dtype=weight_dtype)
                 first_tgt_cond = first_tgt_cond / 2 + 0.5
 
-                # Get interpolated keypoints for padding + cached refs
+                # Get interpolated keypoints for padding + first window + cached refs
+                # We need padding_num + temporal_window_size frames to cover both the
+                # padding frames and the first window's frames
                 mot_bbox_param_interp, kps_ref, kps_frame1, _ = pose_encoder.interpolate_kps_online(
-                    ref_cond_tensor, first_tgt_cond, num_interp=padding_num + 1
+                    ref_cond_tensor, first_tgt_cond, num_interp=padding_num + temporal_window_size
                 )
 
                 # Initialize latents pile with padding (12 frames)

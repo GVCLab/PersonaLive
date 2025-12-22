@@ -101,6 +101,7 @@ def get_boxes_from_kps(kps):
     return get_boxes(kps)
 
 
+@torch.no_grad()
 def main(args):
     device = args.device
     print('device', device)
@@ -347,6 +348,8 @@ def main(args):
                     clip_image.to(device, dtype=weight_dtype)
                 ).image_embeds
                 encoder_hidden_states = clip_image_embeds.unsqueeze(1)
+                del clip_image, clip_image_embeds
+                clear_gpu_memory()
 
                 # Prepare reference image latents (done once)
                 ref_image_tensor = ref_image_processor.preprocess(
@@ -354,6 +357,8 @@ def main(args):
                 ).to(dtype=weight_dtype, device=device)
                 ref_image_latents = vae.encode(ref_image_tensor).latent_dist.mean
                 ref_image_latents = ref_image_latents * 0.18215
+                del ref_image_tensor
+                clear_gpu_memory()
 
                 # Setup reference attention control (done once)
                 reference_control_writer = ReferenceAttentionControl(
@@ -396,6 +401,8 @@ def main(args):
                     ref_face_pil, height=224, width=224
                 ).to(device=device, dtype=weight_dtype)
                 ref_motion = motion_encoder(ref_face_cond_tensor.unsqueeze(2))
+                del ref_face_cond_tensor
+                clear_gpu_memory()
 
                 # Process first frame to get cached keypoints (like wrapper.py)
                 first_pose_img = ori_pose_images[0]
@@ -410,6 +417,8 @@ def main(args):
                 mot_bbox_param_interp, kps_ref, kps_frame1, _ = pose_encoder.interpolate_kps_online(
                     ref_cond_tensor, first_tgt_cond, num_interp=padding_num + temporal_window_size
                 )
+                del ref_cond_tensor, first_tgt_cond
+                clear_gpu_memory()
 
                 # Initialize latents pile with padding (12 frames)
                 latents_pile = deque(maxlen=temporal_adaptive_step)
@@ -447,11 +456,15 @@ def main(args):
                     dri_faces[0], height=224, width=224
                 ).to(device=device, dtype=weight_dtype)
                 first_motion = motion_encoder(first_face_cond.unsqueeze(2))
+                del first_face_cond
+                clear_gpu_memory()
 
                 # Interpolate motion for padding
                 init_motion_hidden = interpolate_tensors(
                     ref_motion, first_motion, num=padding_num + 1
                 )[:, :-1]
+                del first_motion
+                clear_gpu_memory()
 
                 for i in range(temporal_adaptive_step - 1):
                     l = i * temporal_window_size
@@ -484,6 +497,9 @@ def main(args):
                     if window_idx == 0:
                         # First window uses interpolated keypoints from padding computation
                         window_mot_params = mot_bbox_param_interp[padding_num:padding_num + temporal_window_size]
+                        # Free mot_bbox_param_interp as it's no longer needed after first window
+                        del mot_bbox_param_interp
+                        clear_gpu_memory()
                     else:
                         # Subsequent windows use efficient get_kps method
                         window_tgt_conds = []
@@ -556,11 +572,13 @@ def main(args):
 
                         clip_length = noise_pred.shape[2]
                         mid_noise_pred = rearrange(noise_pred, 'b c f h w -> (b f) c h w')
+                        del noise_pred  # Free immediately after rearranging
                         mid_latents = rearrange(latents_model_input, 'b c f h w -> (b f) c h w')
 
                         mid_latents, pred_original_sample = scheduler.step(
                             mid_noise_pred, ut, mid_latents, generator=generator, return_dict=False
                         )
+                        del mid_noise_pred, ut  # Free after scheduler step
 
                         mid_latents = rearrange(mid_latents, '(b f) c h w -> b c f h w', f=clip_length)
                         pred_original_sample = rearrange(pred_original_sample, '(b f) c h w -> b c f h w', f=clip_length)
@@ -569,6 +587,7 @@ def main(args):
                             pred_original_sample[:, :, :temporal_window_size],
                             mid_latents[:, :, temporal_window_size:]
                         ], dim=2)
+                        del mid_latents  # Free after using for latents_model_input
                         latents_model_input = latents_model_input.to(dtype=weight_dtype)
 
                     # History keyframe mechanism
@@ -582,6 +601,7 @@ def main(args):
                         )
                         reference_control_reader.update_hkf(reference_control_writer)
                         num_khf += 1
+                    del pred_original_sample  # Free after history keyframe check
 
                     # Update latents pile with denoised results
                     pile_list = list(latents_pile)
@@ -603,7 +623,7 @@ def main(args):
                     all_decoded_frames.append(decoded_frames.cpu().float())
 
                     del completed_latents, decoded_frames, latents_model_input
-                    del motion_hidden_state, pose_cond_fea, noise_pred
+                    del motion_hidden_state, pose_cond_fea
 
                     # Clear memory periodically
                     if window_idx % 5 == 0:

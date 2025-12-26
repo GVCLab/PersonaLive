@@ -119,7 +119,7 @@ source start.sh
 #### 🏎️ Acceleration (Optional)
 Converting the model to TensorRT can significantly speed up inference (~ 2x ⚡️). Building the engine may take about `20 minutes` depending on your device. Note that TensorRT optimizations may lead to slight variations or a small drop in output quality.
 ```
-pip install -r requirement_trt.txt
+pip install -r requirements_trt.txt
 
 python torch2trt.py
 ```

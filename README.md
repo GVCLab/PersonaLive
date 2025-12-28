@@ -135,7 +135,7 @@ python torch2trt.py
 💡 **PyCUDA Installation Issues**: If you encounter a "Failed to build wheel for pycuda" error during the installation above, please follow these steps:
 ```
 # Install PyCUDA manually using Conda (avoids compilation issues):
-conda install -c conda-forge pycuda
+conda install -c conda-forge pycuda "numpy<2.0"
 
 # Open requirements_trt.txt and comment out or remove the line "pycuda==2024.1.2"
 

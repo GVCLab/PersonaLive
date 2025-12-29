@@ -23,6 +23,7 @@ from einops import rearrange
 from src.utils.util import draw_keypoints, get_boxes
 import torch.nn.functional as F
 from src.modeling.engine_model import EngineModel
+import pycuda.driver as cuda
 
 def map_device(device_or_str):
     return device_or_str if isinstance(device_or_str, torch.device) else torch.device(device_or_str)
@@ -114,23 +115,65 @@ class PersonaLive:
         self.clip_image_processor = CLIPImageProcessor()
         self.cond_image_processor = VaeImageProcessor(
             vae_scale_factor=self.vae_scale_factor, do_convert_rgb=True, do_normalize=True)
-
+        
+        self.cfg = cfg
         self.first_frame = True
         self.motion_bank = None
         self.count = 0
         self.num_khf = 0
-        
-        self.cfg = cfg
+        self.reference_control_writer.clear()
         self.reference_hidden_states_names = ["d00", "d01", "d10", "d11", 
                                               "d20", "d21", "m", "u10", "u11", "u12", 
                                               "u20", "u21", "u22", "u30", "u31", "u32"]
         torch.cuda.empty_cache()
 
-        if args.acceleration == "xformers":
-            try:
-                self.enable_xformers_memory_efficient_attention()
-            except Exception as e:
-                print("Failed to enable xformers:", e)
+        try:
+            self.enable_xformers_memory_efficient_attention()
+        except Exception as e:
+            print("Failed to enable xformers:", e)
+
+    def load_trt_engine(self):
+        print("[PersonaLive] Unloading old TensorRT engine...")
+        
+        # 尝试调用 unlink (如果你上一轮添加了 unlink)
+        try:
+            self.unet_work.unlink()
+        except:
+            pass
+
+        # 删除 Python 对象引用
+        del self.unet_work
+        self.unet_work = None
+        
+        # 强制执行垃圾回收 (Python 层)
+        gc.collect()
+        
+        # 强制清空 CUDA 缓存 (PyTorch 层)
+        torch.cuda.empty_cache()
+
+        # 2. 重新加载模型
+        print("[PersonaLive] Loading TensorRT engine...")
+        self.unet_work = EngineModel(
+            engine_file_path=self.cfg.tensorrt_target_model, 
+            device_int=self.device.index
+        )
+        
+        # 3. 重新绑定输入输出映射
+        self.unet_work.bind({
+            "motion_hidden_states_out": "motion_hidden_states",
+            "pose_cond_fea_out": "pose_cond_fea",
+            "latents" : "sample",
+        })
+        print("[PersonaLive] TensorRT engine loaded and bound.")
+
+    def reset(self):
+        self.first_frame = True
+        self.motion_bank = None
+        self.count = 0
+        self.num_khf = 0
+        self.reference_control_writer.clear()
+        
+        # self.load_trt_engine()
 
     def enable_xformers_memory_efficient_attention(self):
         self.reference_unet.enable_xformers_memory_efficient_attention()
@@ -156,6 +199,7 @@ class PersonaLive:
             clip_image.to(self.image_encoder.device, dtype=self.image_encoder.dtype)
         ).image_embeds
         encoder_hidden_states = clip_image_embeds.unsqueeze(1)
+        torch.cuda.synchronize()
         self.unet_work.prefill(encoder_hidden_states = encoder_hidden_states)
         self.encoder_hidden_states = encoder_hidden_states
 
@@ -172,6 +216,7 @@ class PersonaLive:
             return_dict=False,
         )
         self.reference_hidden_states = self.reference_control_writer.output()
+        torch.cuda.synchronize()
         self.unet_work.prefill(**{name: self.reference_hidden_states[name] for name in self.reference_hidden_states_names})
 
         ref_cond_tensor = self.cond_image_processor.preprocess(
@@ -292,7 +337,8 @@ class PersonaLive:
             noise = torch.randn_like(latents)
             latents = self.scheduler.add_noise(latents, noise, self.timesteps[-1:])
             sample =  torch.cat([self.noisy_latents_first, latents], dim=2)
-
+            
+            torch.cuda.synchronize()
             self.unet_work.prefill(latents=sample)
             self.unet_work.prefill(motion_hidden_states_out=motion_hidden_states)
             self.unet_work.prefill(pose_cond_fea_out=pose_cond_fea)
@@ -315,6 +361,7 @@ class PersonaLive:
         video = results['pred_video'].cpu().numpy()
         motion_out = results['motion_out']
 
+
         idx_to_add = []
         if self.count > 8:
             idx_to_add, self.motion_bank, idx_his = self.calculate_dis(self.motion_bank, motion_out, threshold=17.)
@@ -332,6 +379,7 @@ class PersonaLive:
             for name in self.reference_hidden_states_names:
                 self.reference_hidden_states[name] = torch.cat([self.reference_hidden_states[name], reference_hidden_states[name]], dim=1)
             
+            torch.cuda.synchronize()
             self.unet_work.prefill(**{name: self.reference_hidden_states[name] for name in self.reference_hidden_states_names})
             print('add_keyframes')
             self.num_khf += 1

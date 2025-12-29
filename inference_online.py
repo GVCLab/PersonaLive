@@ -222,6 +222,14 @@ class App:
                 logging.error(f"Reference image error: {e}")
                 raise HTTPException(status_code=500, detail="Failed to process reference image")
 
+        @self.app.post("/api/reset")
+        async def reset():
+            try:
+                self.pipeline.reset()
+            except Exception as e:
+                print(f"Reset Error: {e}")
+                raise HTTPException(status_code=500, detail='Failed to reset pipeline')
+
         if not os.path.exists("./webcam/frontend/public"):
             os.makedirs("./webcam/frontend/public")
 

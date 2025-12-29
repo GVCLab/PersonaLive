@@ -29,7 +29,7 @@ def bytes_to_pil(image_bytes: bytes) -> Image.Image:
 def bytes_to_tensor(image_bytes):
     image = Image.open(io.BytesIO(image_bytes))
     np_img = np.asarray(image)
-    tensor = torch.from_numpy(np_img)
+    tensor = torch.from_numpy(np_img.copy())
     
     # nparr = np.frombuffer(image_bytes, np.uint8)
     # img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)  # BGR

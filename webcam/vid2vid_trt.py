@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field
 from PIL import Image
 import math
 from src.wrapper_trt import PersonaLive
-
+import queue
 
 page_content = """<h1 class="text-3xl font-bold">🎭 PersonaLive!</h1>
 <p class="text-sm">
@@ -60,15 +60,20 @@ class Pipeline:
         self.prepare_event = Event()
         self.stop_event = Event()
         self.restart_event = Event()
+        self.reset_event = Event()
 
         self.process = Process(
             target=generate_process,
-            args=(self.args, self.prepare_event, self.restart_event, self.stop_event, self.input_queue, self.output_queue, self.reference_queue, self.device),
+            args=(self.args, self.prepare_event, self.restart_event, self.stop_event, self.reset_event, self.input_queue, self.output_queue, self.reference_queue, self.device),
             daemon=True
         )
         self.process.start()
         self.processes = [self.process]
         self.prepare_event.wait()
+
+    def reset(self):
+        self.reset_event.set()
+        clear_queue(self.output_queue)
 
     def accept_new_params(self, params: "Pipeline.InputParams"):
         if hasattr(params, "image"):
@@ -80,16 +85,19 @@ class Pipeline:
         if hasattr(params, "restart") and params.restart:
             self.restart_event.set()
             clear_queue(self.output_queue)
-
+    
     def fuse_reference(self, ref_image):
         self.reference_queue.put(ref_image)
 
     def produce_outputs(self) -> List[Image.Image]:
-        qsize = self.output_queue.qsize()
         results = []
-        for _ in range(qsize):
-            results.append(array_to_image(self.output_queue.get()))
-            # results.append(self.output_queue.get())
+        try:
+            while True:
+                data = self.output_queue.get_nowait()
+                results.append(array_to_image(data))
+        except queue.Empty:
+            pass
+            
         return results
 
     def close(self):
@@ -113,6 +121,7 @@ def generate_process(
         prepare_event, 
         restart_event, 
         stop_event, 
+        reset_event,
         input_queue, 
         output_queue, 
         reference_queue,
@@ -125,14 +134,25 @@ def generate_process(
 
     reference_img = reference_queue.get()
     pipeline.fuse_reference(reference_img)
-
     print('fuse reference done')
     
     while not stop_event.is_set():
         if restart_event.is_set():
             clear_queue(input_queue)
             restart_event.clear()
-        images = read_images_from_queue(input_queue, chunk_size, device, stop_event)
+        print("input_queue size = ", input_queue.qsize())
+        images = read_images_from_queue(input_queue, chunk_size, device, reset_event)
+        if reset_event.is_set():
+            pipeline.reset()
+            clear_queue(input_queue)
+            clear_queue(reference_queue)
+            print('Waiting for reference image...')
+            reference_img = reference_queue.get()
+            pipeline.fuse_reference(reference_img)
+            print('Fuse reference image done')
+            reset_event.clear()
+            continue
+
         images = torch.cat(images, dim=0)
         
         video = pipeline.process_input(images)

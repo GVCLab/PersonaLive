@@ -132,24 +132,26 @@ class PersonaLive:
         self.clip_image_processor = CLIPImageProcessor()
         self.cond_image_processor = VaeImageProcessor(
             vae_scale_factor=self.vae_scale_factor, do_convert_rgb=True, do_normalize=True)
+        
+        self.cfg = cfg
+        self.reset()
+        torch.cuda.empty_cache()
 
+        try:
+            self.enable_xformers_memory_efficient_attention()
+        except Exception as e:
+            print("Failed to enable xformers:", e)
+    
+    def reset(self):
         self.first_frame = True
         self.motion_bank = None
         self.count = 0
         self.num_khf = 0
-
         self.latents_pile = deque([])
         self.pose_pile = deque([])
         self.motion_pile = deque([])
-        
-        self.cfg = cfg
-        torch.cuda.empty_cache()
-
-        if args.acceleration == "xformers":
-            try:
-                self.enable_xformers_memory_efficient_attention()
-            except Exception as e:
-                print("Failed to enable xformers:", e)
+        self.reference_control_writer.clear()
+        self.reference_control_reader.clear()
 
     def enable_xformers_memory_efficient_attention(self):
         self.reference_unet.enable_xformers_memory_efficient_attention()

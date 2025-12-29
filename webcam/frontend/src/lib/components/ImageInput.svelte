@@ -17,12 +17,44 @@
     canvasEl.height = height;
   });
 
+  export function clear() {
+    // 1. 释放内存并清空预览 URL
+    if (previewUrl) {
+        URL.revokeObjectURL(previewUrl);
+        previewUrl = null;
+    }
+    
+    // 2. 清空 Canvas 画面
+    if (ctx) {
+        ctx.clearRect(0, 0, width, height);
+    }
+
+    // 3. 重置文件输入框
+    if (fileInputEl) {
+        fileInputEl.value = '';
+    }
+
+    // 4. 传入一个空的 Blob 对象，而不是 null
+    referenceImageStore.set({ blob: new Blob([]) });
+    
+    referenceImageSent.set(false);
+  }
+
+  export function loadBlob(blob: Blob) {
+    if (previewUrl) {
+        URL.revokeObjectURL(previewUrl); // 释放旧内存
+    }
+    previewUrl = URL.createObjectURL(blob);
+    // 注意：赋值给 previewUrl 后，Svelte 会渲染 <img> 标签
+    // <img> 加载完成后会自动触发下方的 on:load={process}，无需手动调用 process()
+  }
+
   function onSelect(e: Event) {
     const input = e.target as HTMLInputElement;
     const f = input.files?.[0];
     if (!f) return;
 
-    previewUrl = URL.createObjectURL(f);
+    loadBlob(f);
   }
 
   async function process() {
@@ -58,7 +90,7 @@
       for="refImageUpload"
       class="cursor-pointer select-none"
     >
-      Select
+      ① Upload
     </label>
 
     <!-- 隐藏原生 input -->

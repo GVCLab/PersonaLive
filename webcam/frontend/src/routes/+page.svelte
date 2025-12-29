@@ -26,11 +26,22 @@
   let warningMessage: string = '';
   let loggingMessage: string = '';
 
-  let fps: number = 25;
-
+  let fps: number = 15;
   const framePusher = new FramePusher(lcmLiveActions.send);
-
   $: framePusher.setFPS(fps);
+
+  let selectedPreset = '';
+  const presetImages = [
+    '/presets/1.jpeg', 
+    '/presets/2.jpeg',
+    '/presets/3.jpeg',
+    '/presets/4.jpeg',
+    '/presets/5.jpeg',
+    '/presets/6.jpeg',
+    '/presets/7.jpeg',
+  ];
+
+  let imageInputComponent: ImageInput;
 
   onMount(() => {
     getSettings();
@@ -73,10 +84,53 @@
     }
   }
 
+  async function selectPreset(imageUrl: string) {
+    selectedPreset = imageUrl;
+    try {
+      // 获取图片的二进制数据
+      const res = await fetch(imageUrl);
+      const blob = await res.blob();
+      
+      // 3. 核心：调用 ImageInput 组件的方法
+      // 这会触发 ImageInput 内部的预览更新、自动裁剪和 Store 更新
+      if (imageInputComponent) {
+        imageInputComponent.loadBlob(blob);
+      }
+      
+    } catch (e) {
+      console.error("Error loading preset:", e);
+    }
+  }
+
+  let disable_reset = true;
+  async function reset() {
+    // UI 清理逻辑...
+    if (imageInputComponent) imageInputComponent.clear();
+    // if (imagePlayerComponent) imagePlayerComponent.clear();
+    // if (videoInputComponent) videoInputComponent.clear();
+
+    selectedPreset = ''; 
+
+    try {
+        const response = await fetch('/api/reset', {
+            method: 'POST',
+        });
+
+        if (response.ok) {
+            loggingMessage = 'Successfully reset.';
+            disable_reset = true;
+        } else {
+            warningMessage = "Reset failed.";
+        }
+    } catch (e) {
+        console.error("Network error:", e);
+    }
+  }
+
   async function sendReference() {
     const refBlob = $referenceImageStore?.blob;
     if (!refBlob || refBlob.size === 0) {
-      warningMessage = 'Please upload reference portrait first.';
+      warningMessage = 'Please select reference portrait first.';
       return;
     }
 
@@ -95,6 +149,7 @@
     referenceImageSent.set(true);
     loggingMessage = 'Successfully uploaded reference portrait.';
     warningMessage = "";
+    disable_reset = false;
   }
 
   $: isLCMRunning = $lcmLiveStatus !== LCMLiveStatus.DISCONNECTED && $lcmLiveStatus !== LCMLiveStatus.PAUSED;
@@ -108,7 +163,7 @@
     try {
       const refFlag = $referenceImageSent;
       if (!refFlag) {
-        warningMessage = 'Please upload reference portrait first.';
+        warningMessage = 'Please fuse reference portrait first.';
         return;
       }
 
@@ -116,6 +171,8 @@
         if (isImageMode) {
           await mediaStreamActions.enumerateDevices();
           await mediaStreamActions.start();
+
+          await new Promise(r => setTimeout(r, 1000));
         }
         disabled = true;
         
@@ -153,8 +210,6 @@
 </svelte:head>
 
 <main class="container mx-auto flex max-w-5xl flex-col gap-3 px-4 py-4">
-  <Warning bind:message={warningMessage}></Warning>
-  <Logging bind:message={loggingMessage}></Logging>
   <article class="text-center">
     {#if pageContent}
       {@html pageContent}
@@ -172,11 +227,34 @@
     {/if}
   </article>
   {#if pipelineParams}
-    <article class="my-3 grid grid-cols-1 sm:grid-cols-[340px_1fr] gap-6">
-
-      <div class="flex flex-col gap-6">
+    <article class="my-3 grid grid-cols-1 sm:grid-cols-[325px_1fr] gap-8">
+      <div class="flex flex-col gap-2">
+        <div class="mt-1">
+          <div class="grid grid-cols-7 sm:grid-cols-7 gap-1">
+            {#each presetImages as imgUrl}
+              <button 
+                on:click={() => selectPreset(imgUrl)}
+                class="relative aspect-square w-full rounded-md overflow-hidden border-2 transition-all duration-200 group focus:outline-none
+                {selectedPreset === imgUrl ? 'border-blue-500 ring-2 ring-blue-500/50' : 'border-transparent hover:border-gray-300 dark:hover:border-gray-600'}"
+              >
+                <img 
+                  src={imgUrl} 
+                  alt="Preset" 
+                  class="w-full h-full object-cover group-hover:scale-110 transition-transform duration-300"
+                />
+                
+                {#if selectedPreset === imgUrl}
+                  <div class="absolute inset-0 bg-black/30 flex items-center justify-center animate-in fade-in duration-200">
+                    <svg class="w-6 h-6 text-white drop-shadow-md" fill="none" stroke="currentColor" stroke-width="3" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"></path></svg>
+                  </div>
+                {/if}
+              </button>
+            {/each}
+          </div>
+        </div>
         <div class="aspect-square w-full">
           <ImageInput 
+            bind:this={imageInputComponent}
             width={Number(pipelineParams.width.default)}
             height={Number(pipelineParams.height.default)}
           />
@@ -208,15 +286,17 @@
                   class="flex-1 h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer dark:bg-gray-700"
               />
           </div>
-          <Button on:click={sendReference} disabled={$referenceImageSent} classList="px-2 py-2 text-sm">Fuse reference</Button>
+          <Button on:click={sendReference} disabled={$referenceImageSent} classList="px-2 py-2 text-sm"> ② Fuse</Button>
 
           <Button on:click={toggleLcmLive} {disabled} classList="px-2 py-2 text-sm">
             {#if isLCMRunning}
-              Stop Animation
+              ③ Stop
             {:else}
-              Start Animation
+              ③ Start
             {/if}
           </Button>
+
+          <Button on:click={reset} disabled={isLCMRunning||disable_reset} classList="px-2 py-2 text-sm"> Reset </Button>
 
         </div>
       </div>
@@ -228,6 +308,8 @@
       <p>Loading...</p>
     </div>
   {/if}
+  <Warning bind:message={warningMessage}></Warning>
+  <Logging bind:message={loggingMessage}></Logging>
 </main>
 
 <style lang="postcss">

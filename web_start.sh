@@ -1,4 +1,5 @@
 #!/bin/bash
+cd webcam
 cd frontend
 npm install
 npm run build

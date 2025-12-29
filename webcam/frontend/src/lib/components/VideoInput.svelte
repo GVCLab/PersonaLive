@@ -99,6 +99,7 @@
     {/if}
     <video
       class="pointer-events-none aspect-square w-full object-cover"
+      style="transform: scaleX(-1);"
       bind:this={videoEl}
       on:loadeddata={() => {
         videoIsReady = true;

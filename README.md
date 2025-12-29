@@ -17,7 +17,7 @@
 ## 📋 TODO
 - [ ] If you find PersonaLive useful or interesting, please give us a Star🌟! Your support drives us to keep improving.
 - [ ] Fix bugs (If you encounter any issues, please feel free to open an issue or contact me! 🙏)
-- [ ] Enhance WebUI (Support reference image replacement).
+- [x] **[2025.12.29]** 🔥 Enhance WebUI (Support reference image replacement).
 - [x] **[2025.12.22]** 🔥 Supported streaming strategy in offline inference to generate long videos on 12GB VRAM!
 - [x] **[2025.12.17]** 🔥 [ComfyUI-PersonaLive](https://github.com/okdalto/ComfyUI-PersonaLive) is now supported! (Thanks to [@okdalto](https://github.com/okdalto))
 - [x] **[2025.12.15]** 🔥 Release `paper`!
@@ -34,7 +34,7 @@
 <img src="assets/overview.png" alt="Image 1" width="100%">
 
 
-We present PersonaLive, a `real-time` and `streamable` diffusion framework capable of generating `infinite-length` portrait animations on a single `12GB GPU`.
+We present PersonaLive, a `real-time` and `streamable` diffusion framework capable of generating `infinite-length` portrait animations.
 
 
 ## 🚀 Getting Started
@@ -119,8 +119,7 @@ python inference_offline.py --use_xformers False
 curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.1/install.sh | bash
 nvm install 18
 
-cd webcam
-source start.sh
+source web_start.sh
 ```
 
 #### 🏎️ Acceleration (Optional)

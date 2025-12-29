@@ -117,11 +117,7 @@ class PersonaLive:
             vae_scale_factor=self.vae_scale_factor, do_convert_rgb=True, do_normalize=True)
         
         self.cfg = cfg
-        self.first_frame = True
-        self.motion_bank = None
-        self.count = 0
-        self.num_khf = 0
-        self.reference_control_writer.clear()
+        self.reset()
         self.reference_hidden_states_names = ["d00", "d01", "d10", "d11", 
                                               "d20", "d21", "m", "u10", "u11", "u12", 
                                               "u20", "u21", "u22", "u30", "u31", "u32"]
@@ -132,40 +128,6 @@ class PersonaLive:
         except Exception as e:
             print("Failed to enable xformers:", e)
 
-    def load_trt_engine(self):
-        print("[PersonaLive] Unloading old TensorRT engine...")
-        
-        # 尝试调用 unlink (如果你上一轮添加了 unlink)
-        try:
-            self.unet_work.unlink()
-        except:
-            pass
-
-        # 删除 Python 对象引用
-        del self.unet_work
-        self.unet_work = None
-        
-        # 强制执行垃圾回收 (Python 层)
-        gc.collect()
-        
-        # 强制清空 CUDA 缓存 (PyTorch 层)
-        torch.cuda.empty_cache()
-
-        # 2. 重新加载模型
-        print("[PersonaLive] Loading TensorRT engine...")
-        self.unet_work = EngineModel(
-            engine_file_path=self.cfg.tensorrt_target_model, 
-            device_int=self.device.index
-        )
-        
-        # 3. 重新绑定输入输出映射
-        self.unet_work.bind({
-            "motion_hidden_states_out": "motion_hidden_states",
-            "pose_cond_fea_out": "pose_cond_fea",
-            "latents" : "sample",
-        })
-        print("[PersonaLive] TensorRT engine loaded and bound.")
-
     def reset(self):
         self.first_frame = True
         self.motion_bank = None
@@ -173,8 +135,6 @@ class PersonaLive:
         self.num_khf = 0
         self.reference_control_writer.clear()
         
-        # self.load_trt_engine()
-
     def enable_xformers_memory_efficient_attention(self):
         self.reference_unet.enable_xformers_memory_efficient_attention()
 

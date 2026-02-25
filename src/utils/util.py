@@ -61,7 +61,7 @@ def create_code_snapshot(root, dst_path, extensions=(".py", ".h", ".cpp", ".cu",
                 try:
                     tar.add(path.as_posix(), arcname=path.relative_to(
                         root).as_posix(), recursive=True)
-                except:
+                except Exception:
                     print(path)
                     assert False, 'Error occur in create_code_snapshot'
 

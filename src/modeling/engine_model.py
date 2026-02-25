@@ -124,7 +124,7 @@ class EngineModel:
                     trt.volume(self.output_shapes[name]), dtype=trt.nptype(self.output_dtypes[name])
                 ) for name in self.output_names
             } # 分配 page-locked host 内存以存储输出
-        except:
+        except Exception:
             self.ctx.pop()
             raise Exception("CUDA Initialization Failed!")
         self.ctx.pop()
@@ -296,7 +296,7 @@ class EngineModel:
         try:
             for name in self.input_names:
                 self.context.set_tensor_address(name, int(self.dinputs[name]))
-        except:
+        except Exception:
             self.ctx.pop()
             if not(self.extra_lock is None):
                 self.extra_lock.release()

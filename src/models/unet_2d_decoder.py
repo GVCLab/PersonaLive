@@ -490,7 +490,7 @@ class UNetDec_ControlNetModel(ModelMixin, ConfigMixin, FromOriginalControlNetMix
                 try:
                     # print('Successfully initializing ControlNet!', name, tensor.shape, src_tensors[name].shape)
                     tensor.copy_(src_tensors[name].detach())
-                except:
+                except Exception:
                     # print('Mismatch occured in initializing ControlNet!', name, tensor.shape, src_tensors[name].shape)
                     # TODO: 确保所有upblock参数有初始化
                     if tensor.dim() == 1:

@@ -373,7 +373,7 @@ class LayerNorm(nn.Module):
                     
                     target_device = target_tensor.device
                     target_dtype = target_tensor.dtype
-                except:
+                except Exception:
                     target_device = param.device
                     target_dtype = param.dtype
 
